@@ -23,7 +23,7 @@ Quick start::
         print(event.delta, end="")
 """
 
-from .agent import Agent, HandoffTarget, RunConfig, RunResult
+from .agent import Agent, RunConfig, RunResult
 from .events import Event, EventType
 from .exceptions import (
     GuardrailRejected,
@@ -66,6 +66,4 @@ __all__ = [
     "GuardrailRejected",
     "ToolExecutionError",
     "MaxTurnsExceeded",
-    # Handoff
-    "HandoffTarget",
 ]

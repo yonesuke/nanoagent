@@ -424,60 +424,6 @@ class Agent(Node):
             fn=agent_fn,
         )
 
-    # ── Handoff ──────────────────────────────────────────────────────────
-
-    def handoff(
-        self,
-        target: Agent,
-        *,
-        tool_name: str | None = None,
-        tool_description: str | None = None,
-    ) -> Tool:
-        """Create a handoff tool that delegates the conversation to another agent.
-
-        Unlike ``as_tool()``, a handoff transfers the full conversation
-        context to the target agent. The target becomes the active agent.
-
-        Example::
-
-            billing = Agent(name="billing", instructions="...", client=client)
-            triage = Agent(
-                name="triage",
-                instructions="...",
-                client=client,
-                tools=[billing.handoff(billing)],
-            )
-
-        Args:
-            target: The agent to hand off to.
-            tool_name: Override the tool name.
-            tool_description: Override the tool description.
-        """
-        name = tool_name or f"handoff_to_{target.name}"
-        desc = tool_description or f"Hand off the conversation to the {target.name} agent"
-
-        parameters: dict[str, Any] = {
-            "type": "object",
-            "properties": {
-                "context": {
-                    "type": "string",
-                    "description": f"Summary or context to pass to {target.name}",
-                }
-            },
-            "required": ["context"],
-        }
-
-        async def handoff_fn(raw_args: dict[str, Any]) -> object:
-            # Return a special marker that the runner interprets
-            return HandoffTarget(agent=target, context=raw_args.get("context", ""))
-
-        return Tool(
-            name=name,
-            description=desc,
-            parameters=parameters,
-            fn=handoff_fn,
-        )
-
     # ── Internals ────────────────────────────────────────────────────────
 
     @dataclass
@@ -670,29 +616,6 @@ class Agent(Node):
             ))
             return result_text, events
 
-        # Handoff: tool returned a HandoffTarget
-        if isinstance(tool_result, HandoffTarget):
-            target: HandoffTarget = tool_result
-            target.agent.parent = self
-            target.agent.depth = self.depth + 1
-            target.agent.reset_path_cache()
-
-            accumulated = ""
-            async for sub_event in target.agent.run(target.context):
-                events.append(sub_event)
-                if sub_event.type == EventType.TEXT_DELTA and sub_event.delta:
-                    accumulated += sub_event.delta
-
-            result_text = accumulated or f"[handed off to {target.agent.name}]"
-            events.append(self._make_event(
-                EventType.TOOL_RESULT,
-                tool_call_id=call_id,
-                tool_result=result_text,
-                name=tool_name,
-                meta={"is_handoff": True, "target": target.agent.name},
-            ))
-            return result_text, events
-
         # Regular tool result
         if isinstance(tool_result, str):
             result_text = tool_result
@@ -720,15 +643,15 @@ class Agent(Node):
         return None
 
 
-# ── Handoff target marker ────────────────────────────────────────────────
-
-
-@dataclass
-class HandoffTarget:
-    """Internal marker returned by handoff tools.
-
-    Carries the target agent and context to pass to it.
-    """
-
-    agent: Agent
-    context: str
+# ── Handoff (TODO) ─────────────────────────────────────────────────────
+# True handoff is planned but not yet implemented.
+# Currently agent-as-tool (Agent.as_tool()) covers delegation use cases.
+#
+# Planned features:
+#   - One-way control transfer: target becomes the active agent
+#   - Full conversation history passing via HandoffInputData
+#   - input_filter for filtering/transforming history
+#   - on_handoff callback with structured input_type
+#   - nest_handoff_history support
+#
+# See: https://deepwiki.com/openai/openai-agents-python#5.1

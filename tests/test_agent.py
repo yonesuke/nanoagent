@@ -399,50 +399,6 @@ class TestRunSync:
         assert len(result.events) > 0
 
 
-# -- Handoff --
-
-
-class TestHandoff:
-    async def test_handoff_creates_tool(self, client):
-        target = Agent(name="specialist", instructions="Specialist.", client=client)
-        source = Agent(name="triage", instructions="Router.", client=client)
-
-        htool = source.handoff(target, tool_name="goto_specialist")
-        assert isinstance(htool, Tool)
-        assert htool.name == "goto_specialist"
-
-    async def test_handoff_tool_returns_target(self, client):
-        from nanoagent.agent import HandoffTarget
-
-        target = Agent(name="specialist", instructions="Specialist.", client=client)
-        source = Agent(name="triage", instructions="Router.", client=client)
-
-        htool = source.handoff(target)
-        result = await htool.fn({"context": "Billing help needed"})
-
-        assert isinstance(result, HandoffTarget)
-        assert result.agent is target
-        assert result.context == "Billing help needed"
-
-    async def test_full_handoff_flow(self, fake_llm, client):
-        """Triage hands off to specialist; both generate events."""
-        fake_llm.add_tool_call("goto_specialist", {"context": "Billing question"})
-        fake_llm.add_text_response("Here's your billing answer!")  # specialist
-        fake_llm.add_text_response("Handled by specialist.")  # triage
-
-        specialist = Agent(name="specialist", instructions="Handle billing.", client=client)
-        triage = Agent(name="triage", instructions="Route requests.", client=client)
-
-        htool = triage.handoff(specialist, tool_name="goto_specialist")
-        triage.tools = [htool]
-
-        text, events = await _collect(triage, "I have a billing question")
-
-        names = {e.name for e in events if e.name}
-        assert "triage" in names
-        assert "specialist" in names
-
-
 # -- Reasoning / thinking streaming --
 
 

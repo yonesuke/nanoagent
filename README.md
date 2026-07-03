@@ -100,18 +100,23 @@ orchestrator = Agent(
 )
 ```
 
-### Handoffs
-Transfer full context to a specialist agent:
+### Sub-Agents (Agent-as-Tool)
+A parent agent can invoke child agents as tools, retaining control
+and receiving the sub-agent's output:
 
 ```python
-billing = Agent(name="billing", instructions="...", client=client)
-triage = Agent(
-    name="triage",
-    instructions="Route to the right specialist.",
+analyst = Agent(name="analyst", instructions="...", client=client)
+orchestrator = Agent(
+    name="orchestrator",
+    instructions="...",
     client=client,
-    tools=[billing.handoff(billing)],
+    tools=[analyst.as_tool()],
 )
 ```
+
+> **Note:** True one-way handoff (where the target becomes the active
+> agent and the caller never regains control) is on the roadmap.
+> See `TODO(handoff)` in the source.
 
 ### Guardrails
 Input/output validation hooks that can block or modify content:
@@ -173,7 +178,8 @@ print(result.tool_calls)
 | Streaming events | ✅ typed | ✅ | ✅ |
 | Guardrails | ✅ composable | ✅ built-in | via middleware |
 | Memory/Sessions | ✅ | ✅ | ✅ |
-| Handoffs | ✅ | ✅ | ❌ |
+| Delegation (agent-as-tool) | ✅ | ✅ | via subgraphs |
+| Handoffs (true control transfer) | TODO | ✅ | ❌ |
 | Tracing | via events | ✅ built-in | via callbacks |
 
 ## License
