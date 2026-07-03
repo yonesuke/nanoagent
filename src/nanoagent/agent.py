@@ -190,6 +190,7 @@ class Agent(Node):
 
         final_output = ""
         tool_call_summaries: list[dict[str, str]] = []
+        last_finish_reason = "stop"
 
         # Main execution loop
         for turn in range(self.config.max_turns):
@@ -210,6 +211,7 @@ class Agent(Node):
             if self.config.stream:
                 assistant_content = ""
                 tool_calls_acc: dict[int, dict[str, str]] = {}
+                last_finish_reason = "stop"
                 async for maybe_event, stream_result in self._consume_stream(stream):
                     if maybe_event is not None:
                         yield maybe_event
@@ -217,10 +219,12 @@ class Agent(Node):
                         # Final result marker
                         assistant_content = stream_result.content
                         tool_calls_acc = stream_result.tool_calls
+                        last_finish_reason = stream_result.finish_reason
             else:
                 choice = stream.choices[0]
                 assistant_content = choice.message.content or ""
                 tool_calls_acc = {}
+                last_finish_reason = getattr(choice, "finish_reason", None) or "stop"
                 if choice.message.tool_calls:
                     for idx, tc in enumerate(choice.message.tool_calls):
                         tool_calls_acc[idx] = {
@@ -228,9 +232,11 @@ class Agent(Node):
                             "function_name": tc.function.name,
                             "function_args": tc.function.arguments,
                         }
-                # Emit TEXT_DELTA for non-streaming so consumers see the output
+                # Emit TEXT_START / TEXT_DELTA / TEXT_END for non-streaming
                 if assistant_content:
+                    yield self._make_event(EventType.TEXT_START)
                     yield self._make_event(EventType.TEXT_DELTA, delta=assistant_content)
+                    yield self._make_event(EventType.TEXT_END)
 
             # Build assistant message
             assistant_msg: ChatCompletionAssistantMessageParam = {
@@ -331,6 +337,10 @@ class Agent(Node):
                 final_output, {"agent": self, "tool_calls": tool_call_summaries}
             )
 
+        yield self._make_event(
+            EventType.RUN_FINISH,
+            finish_reason=last_finish_reason if last_finish_reason else "stop",
+        )
         yield self._make_event(EventType.NODE_END)
 
     async def run_sync(self, input_text: str) -> RunResult:
@@ -474,7 +484,9 @@ class Agent(Node):
     class _StreamResult:
         """Mutable holder for accumulated stream results."""
         content: str = ""
+        reasoning: str = ""
         tool_calls: dict[int, dict[str, str]] = field(default_factory=dict)
+        finish_reason: str = "stop"
 
     async def _consume_stream(
         self,
@@ -482,21 +494,71 @@ class Agent(Node):
     ) -> AsyncIterator[tuple[Event | None, _StreamResult]]:
         """Consume a streaming LLM response, yielding (event, result_so_far) tuples.
 
-        The last yielded tuple has event=None and the final accumulated result.
+        Emits start/delta/end lifecycle events for reasoning and text blocks
+        (Vercel AI SDK compatible). The last yielded tuple has event=None
+        and the final accumulated result.
         """
         result = self._StreamResult()
+        mode: str | None = None  # None | "reasoning" | "text"
 
+        def _switch_to(new_mode: str | None) -> None:
+            nonlocal mode
+            if mode == new_mode:
+                return
+            if mode == "reasoning":
+                yield_e = self._make_event(EventType.REASONING_END)
+                yield (yield_e, result)
+            elif mode == "text":
+                yield_e = self._make_event(EventType.TEXT_END)
+                yield (yield_e, result)
+            mode = new_mode
+            if mode == "reasoning":
+                yield_e = self._make_event(EventType.REASONING_START)
+                yield (yield_e, result)
+            elif mode == "text":
+                yield_e = self._make_event(EventType.TEXT_START)
+                yield (yield_e, result)
+
+        # We can't use yield inside _switch_to because it's a nested function
+        # in an AsyncIterator. So we inline the mode switching below.
         async for chunk in stream:
             delta = chunk.choices[0].delta if chunk.choices else None
             if delta is None:
                 continue
 
-            if delta.content:
-                result.content += delta.content
-                evt = self._make_event(EventType.TEXT_DELTA, delta=delta.content)
-                yield (evt, result)
+            # Capture finish_reason from the choice (last chunk has it)
+            choice = chunk.choices[0] if chunk.choices else None
+            if choice and getattr(choice, "finish_reason", None):
+                result.finish_reason = choice.finish_reason
 
+            # ── Reasoning content ──
+            reasoning = getattr(delta, "reasoning_content", None)
+            if reasoning:
+                if mode != "reasoning":
+                    if mode == "text":
+                        yield (self._make_event(EventType.TEXT_END), result)
+                    mode = "reasoning"
+                    yield (self._make_event(EventType.REASONING_START), result)
+                result.reasoning += reasoning
+                yield (self._make_event(EventType.REASONING_DELTA, delta=reasoning), result)
+
+            # ── Text content ──
+            if delta.content:
+                if mode != "text":
+                    if mode == "reasoning":
+                        yield (self._make_event(EventType.REASONING_END), result)
+                    mode = "text"
+                    yield (self._make_event(EventType.TEXT_START), result)
+                result.content += delta.content
+                yield (self._make_event(EventType.TEXT_DELTA, delta=delta.content), result)
+
+            # ── Tool calls ──
             if delta.tool_calls:
+                if mode == "reasoning":
+                    yield (self._make_event(EventType.REASONING_END), result)
+                elif mode == "text":
+                    yield (self._make_event(EventType.TEXT_END), result)
+                mode = None
                 for tc_delta in delta.tool_calls:
                     idx = tc_delta.index
                     if idx not in result.tool_calls:
@@ -513,6 +575,12 @@ class Agent(Node):
                             acc["function_name"] += tc_delta.function.name
                         if tc_delta.function.arguments:
                             acc["function_args"] += tc_delta.function.arguments
+
+        # End of stream: close any open block
+        if mode == "reasoning":
+            yield (self._make_event(EventType.REASONING_END), result)
+        elif mode == "text":
+            yield (self._make_event(EventType.TEXT_END), result)
 
         # Yield the final result marker
         yield (None, result)

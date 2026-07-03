@@ -443,6 +443,115 @@ class TestHandoff:
         assert "specialist" in names
 
 
+# -- Reasoning / thinking streaming --
+
+
+class TestAgentReasoning:
+    async def test_reasoning_before_text(self, fake_llm, client):
+        """o-series pattern: reasoning_content streams before content."""
+        fake_llm.add_reasoning_response(
+            reasoning="Let me think... The answer is 42.",
+            text="The answer is 42.",
+        )
+
+        agent = Agent(name="bot", instructions="Think before answering.", client=client)
+        _, events = await _collect(agent, "Life universe everything?")
+
+        types = [e.type for e in events if e.type in (
+            EventType.REASONING_START, EventType.REASONING_DELTA,
+            EventType.REASONING_END, EventType.TEXT_START,
+            EventType.TEXT_DELTA, EventType.TEXT_END,
+        )]
+        # Should be: REASONING_START, REASONING_DELTA, REASONING_END,
+        #            TEXT_START, TEXT_DELTA, TEXT_END
+        assert EventType.REASONING_START in types
+        assert EventType.REASONING_DELTA in types
+        assert EventType.REASONING_END in types
+        assert EventType.TEXT_START in types
+        assert EventType.TEXT_DELTA in types
+        assert EventType.TEXT_END in types
+        # Reasoning before text
+        reason_idx = types.index(EventType.REASONING_START)
+        text_idx = types.index(EventType.TEXT_START)
+        assert reason_idx < text_idx
+
+    async def test_text_only_bookends(self, fake_llm, client):
+        """Plain text response gets TEXT_START/TEXT_END bookends."""
+        fake_llm.add_text_response("Hello, world!")
+
+        agent = Agent(name="bot", instructions="Be helpful.", client=client)
+        full_text, events = await _collect(agent, "Hi")
+
+        types = [e.type for e in events]
+        assert EventType.TEXT_START in types
+        assert EventType.TEXT_DELTA in types
+        assert EventType.TEXT_END in types
+        assert full_text == "Hello, world!"
+
+    async def test_run_finish_event(self, fake_llm, client):
+        """Every run ends with a RUN_FINISH event before NODE_END."""
+        fake_llm.add_text_response("OK")
+
+        agent = Agent(name="bot", instructions="Be helpful.", client=client)
+        _, events = await _collect(agent, "Hi")
+
+        # Last two events: RUN_FINISH, NODE_END
+        assert events[-2].type == EventType.RUN_FINISH
+        assert events[-1].type == EventType.NODE_END
+        assert events[-2].finish_reason == "stop"
+
+    async def test_text_start_end_order(self, fake_llm, client):
+        """TEXT_START → TEXT_DELTA → TEXT_END in order."""
+        fake_llm.add_text_response("ABC")
+
+        agent = Agent(name="bot", instructions="...", client=client)
+        _, events = await _collect(agent, "Hi")
+
+        text_types = [e.type for e in events
+                      if e.type in (EventType.TEXT_START, EventType.TEXT_DELTA, EventType.TEXT_END)]
+        assert text_types == [EventType.TEXT_START, EventType.TEXT_DELTA, EventType.TEXT_END]
+
+    async def test_reasoning_with_tool_call(self, fake_llm, client):
+        """Reasoning → tool call pattern: reasoning ends before tool call."""
+        from conftest import _tool_call_delta
+
+        # First turn: reasoning then tool call
+        chunks = [
+            (None, "Thinking about which tool to use...", None),  # reasoning
+            (None, None, [_tool_call_delta(0, id_="c1", name="search", args='{"q":"test"}')]),
+        ]
+        fake_llm.add_interleaved_response(chunks)
+        # Second turn: text response
+        fake_llm.add_text_response("Found results.")
+
+        @tool(name="search")
+        async def search(q: str) -> str:
+            return f"Results for {q}"
+
+        agent = Agent(name="bot", instructions="Search and report.", client=client, tools=[search])
+        _, events = await _collect(agent, "Search for test")
+
+        reason_types = [e.type for e in events if e.type in (
+            EventType.REASONING_START, EventType.REASONING_DELTA, EventType.REASONING_END
+        )]
+        assert len(reason_types) >= 3  # start, delta, end
+        # REASONING_END comes before TOOL_CALL
+        reason_end_indices = [i for i, e in enumerate(events) if e.type == EventType.REASONING_END]
+        tool_call_idx = next(i for i, e in enumerate(events) if e.type == EventType.TOOL_CALL)
+        assert reason_end_indices[0] < tool_call_idx
+
+    async def test_non_streaming_bookends(self, fake_llm, client):
+        """Non-streaming mode also emits TEXT_START/TEXT_END."""
+        fake_llm.add_text_response("Non-streamed")
+
+        agent = Agent(name="bot", instructions="...", client=client, config=RunConfig(stream=False))
+        _, events = await _collect(agent, "Hi")
+
+        types = [e.type for e in events]
+        assert EventType.TEXT_START in types
+        assert EventType.TEXT_END in types
+
+
 # -- Error handling --
 
 

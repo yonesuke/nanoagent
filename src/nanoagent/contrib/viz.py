@@ -203,6 +203,8 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
     --human-input: #be4bdb;
     --error: #e03131;
     --error-bg: #fff5f5;
+    --reasoning: #845ef7;
+    --reasoning-bg: #f3f0ff;
 }}
 @media (prefers-color-scheme: dark) {{
     :root {{
@@ -216,6 +218,8 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
         --accent: #4dabf7;
         --accent-bg: #1c3a5c;
         --error-bg: #2d1b1b;
+        --reasoning: #b197fc;
+        --reasoning-bg: #2d2a3d;
     }}
 }}
 * {{ box-sizing: border-box; margin: 0; padding: 0; }}
@@ -354,6 +358,9 @@ header .summary {{ color: var(--text-secondary); font-size: 12px; }}
 .legend-dot.tool_result {{ background: var(--tool-result); }}
 .legend-dot.human_input_request {{ background: var(--human-input); }}
 .legend-dot.error {{ background: var(--error); }}
+.legend-dot.reasoning_start, .legend-dot.reasoning_delta, .legend-dot.reasoning_end {{ background: var(--reasoning); }}
+.legend-dot.text_start, .legend-dot.text_delta, .legend-dot.text_end {{ background: var(--text-delta); border: 1px solid var(--border); }}
+.legend-dot.finish {{ background: var(--node-end); }}
 .empty-state {{
     display: flex;
     flex-direction: column;
@@ -389,21 +396,33 @@ const DATA = {data_json};
 const EVENT_ICONS = {{
     node_start: "▶",
     node_end: "◀",
+    reasoning_start: "💭",
+    reasoning_delta: "",
+    reasoning_end: "",
+    text_start: "",
     text_delta: "",
+    text_end: "",
     tool_call: "🔧",
     tool_result: "📥",
     human_input_request: "❓",
     error: "❌",
+    finish: "✓",
 }};
 
 const EVENT_COLORS = {{
     node_start: "var(--node-start)",
     node_end: "var(--node-end)",
+    reasoning_start: "var(--reasoning)",
+    reasoning_delta: "var(--reasoning)",
+    reasoning_end: "var(--reasoning)",
+    text_start: "var(--text)",
     text_delta: "var(--text)",
+    text_end: "var(--text)",
     tool_call: "var(--tool-call)",
     tool_result: "var(--tool-result)",
     human_input_request: "var(--human-input)",
     error: "var(--error)",
+    finish: "var(--node-end)",
 }};
 
 let activeNodeId = null;
@@ -634,6 +653,20 @@ function buildTrace(container) {{
                 contentEl.textContent = "[" + (ev.name || "?") + "] finished";
                 contentEl.style.color = EVENT_COLORS.node_end;
                 break;
+            case "reasoning_start":
+                contentEl.textContent = "💭 thinking...";
+                contentEl.style.color = EVENT_COLORS.reasoning_start;
+                contentEl.style.fontStyle = "italic";
+                break;
+            case "reasoning_end":
+                contentEl.textContent = "(end thought)";
+                contentEl.style.color = EVENT_COLORS.reasoning_end;
+                contentEl.style.fontStyle = "italic";
+                break;
+            case "text_start":
+            case "text_end":
+                // Silent bookends — skip display
+                return null;
             case "tool_call":
                 contentEl.textContent = (ev.name || "tool") + "(" + ($fmtToolArgs(ev.tool_args) || "") + ")";
                 contentEl.className += " trace-tool";
@@ -650,6 +683,10 @@ function buildTrace(container) {{
                 contentEl.textContent = (ev.error || "").slice(0, 200);
                 contentEl.className += " trace-error";
                 break;
+            case "finish":
+                contentEl.textContent = "✓ done" + (ev.finish_reason ? " (" + ev.finish_reason + ")" : "");
+                contentEl.style.color = EVENT_COLORS.finish;
+                break;
         }}
         row.appendChild(contentEl);
 
@@ -657,18 +694,28 @@ function buildTrace(container) {{
         return row;
     }}
 
-    // Main loop: coalesce consecutive text_delta events
+    // Main loop: coalesce consecutive text_delta AND reasoning_delta events
     let deltaBuf = [];
+    let deltaType = null;
     for (const ev of DATA.events) {{
-        if (ev.type === "text_delta") {{
+        if (ev.type === "text_delta" || ev.type === "reasoning_delta") {{
+            if (deltaType != null && ev.type !== deltaType) {{
+                // Flush previous block
+                const deltaRow = flushDeltaBuf(deltaBuf);
+                if (deltaRow) container.appendChild(deltaRow);
+                deltaBuf = [];
+            }}
+            deltaType = ev.type;
             deltaBuf.push(ev);
         }} else {{
             // Flush buffered deltas
             const deltaRow = flushDeltaBuf(deltaBuf);
             if (deltaRow) container.appendChild(deltaRow);
             deltaBuf = [];
-            // Emit non-delta event
-            container.appendChild(makeRow(ev));
+            deltaType = null;
+            // Emit non-delta event (skip null returns for silent bookends)
+            const row = makeRow(ev);
+            if (row) container.appendChild(row);
         }}
     }}
     // Flush remaining
@@ -682,11 +729,13 @@ function buildLegend(container) {{
     const types = [
         ["node_start", "Start"],
         ["node_end", "End"],
+        ["reasoning_delta", "Reasoning"],
         ["text_delta", "Text"],
         ["tool_call", "Tool Call"],
         ["tool_result", "Result"],
         ["human_input_request", "Human"],
         ["error", "Error"],
+        ["finish", "Finish"],
     ];
     for (const [type, label] of types) {{
         const item = document.createElement("span");

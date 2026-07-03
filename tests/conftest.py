@@ -35,11 +35,16 @@ def _ns(obj: Any) -> Any:
 
 def _make_chunk(
     content: str | None = None,
+    reasoning_content: str | None = None,
     tool_calls: list[dict[str, Any]] | None = None,
     finish_reason: str | None = None,
 ) -> SimpleNamespace:
     """Build a fake OpenAI streaming chunk with proper attribute access."""
-    delta = SimpleNamespace(content=content, tool_calls=_ns(tool_calls) if tool_calls else None)
+    delta = SimpleNamespace(
+        content=content,
+        reasoning_content=reasoning_content,
+        tool_calls=_ns(tool_calls) if tool_calls else None,
+    )
     choice = SimpleNamespace(delta=delta, finish_reason=finish_reason, index=0)
     return SimpleNamespace(choices=[choice])
 
@@ -67,8 +72,9 @@ class _QueuedResponse:
     """A pre-programmed LLM response for one turn."""
 
     text: str = ""
+    reasoning: str = ""
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
-    stream_chunks: list[tuple[str | None, list[dict[str, Any]] | None]] = field(default_factory=list)
+    stream_chunks: list[tuple[str | None, str | None, list[dict[str, Any]] | None]] = field(default_factory=list)
 
 
 class FakeLLM:
@@ -101,7 +107,45 @@ class FakeLLM:
 
     def add_text_response(self, text: str) -> FakeLLM:
         """Queue a simple text response."""
-        self._queue.append(_QueuedResponse(text=text, stream_chunks=[(text, None)]))
+        self._queue.append(_QueuedResponse(text=text, stream_chunks=[(text, None, None)]))
+        return self
+
+    def add_reasoning_response(
+        self, reasoning: str, text: str = ""
+    ) -> FakeLLM:
+        """Queue a response with reasoning (thinking) followed by text.
+
+        Emulates o-series model output where reasoning_content streams
+        before visible content.
+        """
+        chunks: list[tuple[str | None, str | None, list[dict[str, Any]] | None]] = []
+        if reasoning:
+            chunks.append((None, reasoning, None))
+        if text:
+            chunks.append((text, None, None))
+        self._queue.append(
+            _QueuedResponse(text=text, reasoning=reasoning, stream_chunks=chunks)
+        )
+        return self
+
+    def add_interleaved_response(
+        self,
+        chunks: list[tuple[str | None, str | None, list[dict[str, Any]] | None]],
+    ) -> FakeLLM:
+        """Queue a response with explicit interleaved chunks.
+
+        Each tuple is (content, reasoning_content, tool_call_deltas).
+        Set None for absent parts.
+        """
+        text_parts = [c[0] for c in chunks if c[0]]
+        reasoning_parts = [c[1] for c in chunks if c[1]]
+        self._queue.append(
+            _QueuedResponse(
+                text="".join(text_parts),
+                reasoning="".join(reasoning_parts),
+                stream_chunks=chunks,
+            )
+        )
         return self
 
     def add_tool_call(
@@ -125,6 +169,7 @@ class FakeLLM:
                 ],
                 stream_chunks=[
                     (
+                        None,
                         None,
                         [_tool_call_delta(0, id_=tc_id, name=tool_name, args=args_str)],
                     )
@@ -182,7 +227,7 @@ class FakeLLM:
             if is_stream:
                 return _FakeStream(response.stream_chunks)
             else:
-                return _FakeCompletion(response.text, response.tool_calls)
+                return _FakeCompletion(response.text, response.reasoning, response.tool_calls)
 
         client.chat.completions.create = fake_create  # type: ignore[method-assign]
         return client
@@ -194,7 +239,7 @@ class FakeLLM:
 class _FakeStream:
     """Simulates an OpenAI streaming response."""
 
-    def __init__(self, chunks: list[tuple[str | None, list[dict[str, Any]] | None]]):
+    def __init__(self, chunks: list[tuple[str | None, str | None, list[dict[str, Any]] | None]]):
         self._chunks = chunks
         self._index = 0
 
@@ -204,11 +249,16 @@ class _FakeStream:
     async def __anext__(self):
         if self._index >= len(self._chunks):
             raise StopAsyncIteration
-        content, tool_calls = self._chunks[self._index]
+        content, reasoning_content, tool_calls = self._chunks[self._index]
         self._index += 1
 
         finish = "stop" if self._index >= len(self._chunks) else None
-        return _make_chunk(content=content, tool_calls=tool_calls, finish_reason=finish)
+        return _make_chunk(
+            content=content,
+            reasoning_content=reasoning_content,
+            tool_calls=tool_calls,
+            finish_reason=finish,
+        )
 
 
 # -- Fake non-stream completion --
@@ -217,7 +267,7 @@ class _FakeStream:
 class _FakeCompletion:
     """Simulates an OpenAI non-streaming completion response."""
 
-    def __init__(self, text: str, tool_calls: list[dict[str, Any]]):
+    def __init__(self, text: str, reasoning: str, tool_calls: list[dict[str, Any]]):
         tc_list = None
         if tool_calls:
             tc_list = [
@@ -233,7 +283,11 @@ class _FakeCompletion:
             ]
 
         message = SimpleNamespace(content=text or None, tool_calls=tc_list)
-        self.choices = [SimpleNamespace(message=message, index=0)]
+        self.choices = [SimpleNamespace(
+            message=message,
+            index=0,
+            finish_reason="stop",
+        )]
 
 
 # -- Fixtures --

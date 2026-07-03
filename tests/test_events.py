@@ -110,14 +110,74 @@ class TestEventToSSE:
         assert "delta" not in data
         assert "error" not in data
         assert "tool_call_id" not in data
+        assert "finish_reason" not in data
+
+    def test_reasoning_delta_sse(self):
+        e = Event(
+            type=EventType.REASONING_DELTA,
+            node_id="n1",
+            node_path=["agent"],
+            depth=0,
+            delta="Let me think about this...",
+        )
+        sse = e.to_sse()
+        data = json.loads(sse[6:].strip())
+        assert data["type"] == "reasoning_delta"
+        assert data["delta"] == "Let me think about this..."
+
+    def test_reasoning_start_end_sse(self):
+        for etype in (EventType.REASONING_START, EventType.REASONING_END):
+            e = Event(
+                type=etype,
+                node_id="n1",
+                node_path=["agent"],
+                depth=0,
+            )
+            sse = e.to_sse()
+            data = json.loads(sse[6:].strip())
+            assert data["type"] == etype.value
+            assert "delta" not in data
+
+    def test_text_start_end_sse(self):
+        for etype in (EventType.TEXT_START, EventType.TEXT_END):
+            e = Event(
+                type=etype,
+                node_id="n1",
+                node_path=["agent"],
+                depth=0,
+            )
+            sse = e.to_sse()
+            data = json.loads(sse[6:].strip())
+            assert data["type"] == etype.value
+
+    def test_finish_sse(self):
+        e = Event(
+            type=EventType.RUN_FINISH,
+            node_id="n1",
+            node_path=["agent"],
+            depth=0,
+            finish_reason="stop",
+            meta={"usage": {"prompt_tokens": 10, "completion_tokens": 20}},
+        )
+        sse = e.to_sse()
+        data = json.loads(sse[6:].strip())
+        assert data["type"] == "finish"
+        assert data["finish_reason"] == "stop"
+        assert data["meta"]["usage"]["prompt_tokens"] == 10
 
 
 class TestEventTypeValues:
     def test_all_event_types(self):
         assert EventType.NODE_START.value == "node_start"
         assert EventType.NODE_END.value == "node_end"
+        assert EventType.REASONING_START.value == "reasoning_start"
+        assert EventType.REASONING_DELTA.value == "reasoning_delta"
+        assert EventType.REASONING_END.value == "reasoning_end"
+        assert EventType.TEXT_START.value == "text_start"
         assert EventType.TEXT_DELTA.value == "text_delta"
+        assert EventType.TEXT_END.value == "text_end"
         assert EventType.TOOL_CALL.value == "tool_call"
         assert EventType.TOOL_RESULT.value == "tool_result"
         assert EventType.HUMAN_INPUT_REQUEST.value == "human_input_request"
         assert EventType.ERROR.value == "error"
+        assert EventType.RUN_FINISH.value == "finish"
