@@ -1,0 +1,40 @@
+[project]
+name = "nanoagent"
+version = "0.1.0"
+description = "Nano-scale AI agent framework — tree-based agents with streaming, tools, guardrails, and memory. One external dependency: openai."
+requires-python = ">=3.11"
+dependencies = [
+    "openai>=1.0",
+    "python-dotenv>=1.2.2",
+    "rich>=15.0.0",
+]
+readme = "README.md"
+license = { text = "MIT" }
+authors = [
+    { name = "randomnotes" }
+]
+keywords = ["ai", "agent", "llm", "openai", "minimal"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+
+[project.urls]
+Repository = "https://github.com/user/nanoagent"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/nanoagent"]
+
+[tool.ruff]
+target-version = "py311"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
